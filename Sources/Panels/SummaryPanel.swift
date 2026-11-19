@@ -254,7 +254,7 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             rootStack.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
             rootStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
             rootStack.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
-            row3.heightAnchor.constraint(equalToConstant: 88),
+            row3.heightAnchor.constraint(equalToConstant: 74),
             // 内存固定 145pt（较 5:3 再缩 1/3）：窗口高度变化全部由上半部 CPU 区吸收
             memoryCard.heightAnchor.constraint(equalToConstant: 145),
         ])
@@ -642,18 +642,18 @@ final class SmallStatCardView: NSView, ThemeAware {
         addSubview(iconView)
 
         titleLabel.stringValue = title
-        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 17, weight: .bold)
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 18, weight: .bold)
         valueLabel.alignment = .right
         valueLabel.lineBreakMode = .byTruncatingTail
         valueLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(valueLabel)
 
-        subtitleLabel.font = .systemFont(ofSize: 11)
+        subtitleLabel.font = .systemFont(ofSize: 12)
         subtitleLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(subtitleLabel)
@@ -663,9 +663,9 @@ final class SmallStatCardView: NSView, ThemeAware {
 
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            iconView.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-            iconView.widthAnchor.constraint(equalToConstant: 14),
-            iconView.heightAnchor.constraint(equalToConstant: 14),
+            iconView.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16),
 
             titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 4),
             titleLabel.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
@@ -680,9 +680,9 @@ final class SmallStatCardView: NSView, ThemeAware {
 
             bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            // 卡片固定高度下，多余空间落在副标题与刻度条之间（刻度条贴底）
-            bar.topAnchor.constraint(greaterThanOrEqualTo: subtitleLabel.bottomAnchor, constant: 5),
-            bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
+            // 刻度条紧贴副标题（仅 4pt 呼吸位），内容撑满卡片无大空隙
+            bar.topAnchor.constraint(greaterThanOrEqualTo: subtitleLabel.bottomAnchor, constant: 4),
+            bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
             bar.heightAnchor.constraint(equalToConstant: 12),
         ])
         applyTheme()
