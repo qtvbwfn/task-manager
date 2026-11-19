@@ -19,27 +19,31 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
     private let smallCards: [SmallStatCardView] = [
         SmallStatCardView(title: "磁盘", symbol: "internaldrive", kind: .disk),
         SmallStatCardView(title: "网络", symbol: "network", kind: .network),
-        SmallStatCardView(title: "电源", symbol: "bolt", kind: .power),
         SmallStatCardView(title: "GPU", symbol: "display", kind: .gpu),
-        SmallStatCardView(title: "热状态", symbol: "thermometer", kind: .thermal),
+        SmallStatCardView(title: "系统压力", symbol: "speedometer", kind: .thermal),
     ]
 
     private var isVisiblePanel = false
     private var sampleCounter = 0
+    /// Top 表可视行数（随窗口高度变化）：TOP N 排满即止、不滚动
+    private var visibleRowCount = 0
 
-    /// NSTableView 不会自动缩到 clip 宽度：名称列吃掉剩余宽度、表框贴齐 clip，
-    /// 否则最后一列（内存）被裁掉、名称列右侧留一大块空白
-    private func fitTableWidth() {
+    /// NSTableView 不会自动缩到 clip：名称列吃掉剩余宽度、表框贴齐 clip，
+    /// 否则最后一列（内存）被裁掉、名称列右侧留一大块空白；行数按可视高度取 TOP N
+    private func fitTableSize() {
         guard let scroll = topTable.enclosingScrollView else { return }
-        let width = scroll.contentView.bounds.width
-        guard width > 1 else { return }
+        let clip = scroll.contentView.bounds
+        guard clip.width > 1, clip.height > 1 else { return }
+        let headerHeight = topTable.headerView?.frame.height ?? 22
+        visibleRowCount = max(3, Int((clip.height - headerHeight) / topTable.rowHeight))
         if let nameColumn = topTable.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("name")) {
             let gap = topTable.intercellSpacing.width * CGFloat(topTable.tableColumns.count - 1)
             let fixed = topTable.tableColumns.filter { $0 != nameColumn }.reduce(0.0) { $0 + $1.width }
-            nameColumn.width = max(140, width - fixed - gap - 1)
+            nameColumn.width = max(140, clip.width - fixed - gap - 1)
         }
-        if abs(topTable.frame.width - width) > 0.5 {
-            topTable.setFrameSize(NSSize(width: width, height: topTable.frame.height))
+        let tableHeight = headerHeight + CGFloat(visibleRowCount) * topTable.rowHeight
+        if abs(topTable.frame.width - clip.width) > 0.5 || abs(topTable.frame.height - tableHeight) > 0.5 {
+            topTable.setFrameSize(NSSize(width: clip.width, height: tableHeight))
         }
     }
 
@@ -158,9 +162,8 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
 
         let scroll = NSScrollView()
         scroll.documentView = topTable
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.scrollerStyle = .overlay
+        // TOP N 按可视高度排满即止，不需要滚动条
+        scroll.hasVerticalScroller = false
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         tablePanel.addSubview(scroll)
@@ -207,15 +210,16 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             rootStack.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
             rootStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
             rootStack.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
-            row1.heightAnchor.constraint(greaterThanOrEqualToConstant: 176),
-            memoryCard.heightAnchor.constraint(greaterThanOrEqualToConstant: 146),
-            row3.heightAnchor.constraint(equalToConstant: 66),
+            row3.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
         ])
 
-        // 顶部三件套优先保持 320pt（Top 表约 11 行），多余高度全部让给内存图
-        let row1Preferred = row1.heightAnchor.constraint(equalToConstant: 320)
-        row1Preferred.priority = .defaultHigh
-        row1Preferred.isActive = true
+        // 三段高度按 5:3:2 分配：上半部（仪表/概览/TOP N） : 内存 : 小卡片
+        let row1Ratio = row1.heightAnchor.constraint(equalTo: row3.heightAnchor, multiplier: 2.5)
+        row1Ratio.priority = NSLayoutConstraint.Priority(999)
+        row1Ratio.isActive = true
+        let memoryRatio = memoryCard.heightAnchor.constraint(equalTo: row3.heightAnchor, multiplier: 1.5)
+        memoryRatio.priority = NSLayoutConstraint.Priority(999)
+        memoryRatio.isActive = true
     }
 
     // MARK: - 数据刷新
@@ -223,13 +227,12 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
     @objc private func samplerUpdated() {
         guard isVisiblePanel else { return }
         sampleCounter += 1
-        // Top CPU 表重排 577 行代价高：降到 0.25 Hz，其余仪表/折线仍 1 Hz
-        refresh(reloadTable: sampleCounter % 4 == 0)
+        // Top 表只剩可视的 N 行，reloadData 代价低：跟随 1 Hz 采样全量刷新
+        refresh()
     }
 
-    private func refresh(reloadTable: Bool = true) {
-        let updateText = reloadTable || sampleCounter % 2 == 0
-        fitTableWidth()
+    private func refresh() {
+        fitTableSize()
         let history = Sampler.shared.historySnapshot
         let system = Sampler.shared.system
         let iokit = Sampler.shared.iokit
@@ -240,24 +243,20 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
         let temperature = iokit?.temperature
         let gpu = iokit?.gpuUtilization
 
-        cpuGauge.update(value: Formats.percent(cpu), ratio: cpu / 100, subtitle: "\(StaticInfo.logicalCores) 核", updateLabels: updateText)
+        cpuGauge.update(value: Formats.percent(cpu), ratio: cpu / 100, subtitle: "\(StaticInfo.logicalCores) 核")
         tempGauge.update(
             value: temperature.map { String(format: "%.1f °C", $0) } ?? "不可用",
             ratio: (temperature ?? 0) / 110,
-            subtitle: "SMC",
-            updateLabels: updateText
+            subtitle: "SMC"
         )
         gpuGauge.update(
             value: gpu.map { Formats.percent($0) } ?? "不可用",
             ratio: (gpu ?? 0) / 100,
-            subtitle: "核显",
-            updateLabels: updateText
+            subtitle: "核显"
         )
 
-        if updateText {
-            overviewValue.stringValue = Formats.percent(cpu)
-            overviewFooter.stringValue = "内核 \(Formats.percent(system?.kernelPercent ?? 0)) · \(StaticInfo.logicalCores) 逻辑处理器"
-        }
+        overviewValue.stringValue = Formats.percent(cpu)
+        overviewFooter.stringValue = "内核 \(Formats.percent(system?.kernelPercent ?? 0)) · \(StaticInfo.logicalCores) 逻辑处理器"
         overviewChart.yMin = 0
         overviewChart.yMax = 100
         let temperatureScaled = history.temperature.map { $0 / 110.0 * 100.0 }
@@ -267,15 +266,13 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             .init(values: history.kernel, color: NSColor(srgbRed: 0.95, green: 0.35, blue: 0.35, alpha: 1)),
         ]
 
-        // Top CPU 表
+        // Top CPU 表：按可视高度截取 TOP N，排满即止、不滚动
         let top = processes
             .filter { $0.pid != getpid() }
             .sorted { $0.cpuPercent > $1.cpuPercent }
-        topProcesses = top
+        topProcesses = visibleRowCount > 0 ? Array(top.prefix(visibleRowCount)) : top
         tableCountLabel.stringValue = "共 \(processes.count) 个"
-        if reloadTable || topTable.numberOfRows != topProcesses.count {
-            topTable.reloadData()
-        }
+        topTable.reloadData()
 
         // 内存
         let total = StaticInfo.memorySize
@@ -286,47 +283,56 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             available: system?.memoryAvailable ?? 0,
             cached: system?.memoryCached ?? 0,
             swapUsed: system?.swapUsed ?? 0,
-            history: history.memoryUsed,
-            updateLabels: updateText
+            history: history.memoryUsed
         )
 
-        // 小面板
+        // 小面板：磁盘/网络主数值为读+写（下+上）合计，副标题分别标注两个方向（对标 TMOG）
+        let diskRead = iokit?.diskReadPerSecond ?? 0
+        let diskWrite = iokit?.diskWritePerSecond ?? 0
         smallCards[0].update(
-            value: Formats.rate(iokit?.diskReadPerSecond ?? 0),
-            subtitle: "写 " + Formats.rate(iokit?.diskWritePerSecond ?? 0),
-            ratio: min(max(iokit?.diskReadPerSecond ?? 0, iokit?.diskWritePerSecond ?? 0) / (200 * 1_048_576.0), 1),
-            updateLabels: updateText
+            value: Formats.rate(diskRead + diskWrite),
+            subtitle: "读 \(Formats.rate(diskRead)) · 写 \(Formats.rate(diskWrite))",
+            ratio: min(max(diskRead, diskWrite) / (200 * 1_048_576.0), 1)
         )
+        let netIn = network?.bytesInPerSecond ?? 0
+        let netOut = network?.bytesOutPerSecond ?? 0
         smallCards[1].update(
-            value: Formats.rate(network?.bytesInPerSecond ?? 0),
-            subtitle: "上行 " + Formats.rate(network?.bytesOutPerSecond ?? 0),
-            ratio: min(max(network?.bytesInPerSecond ?? 0, network?.bytesOutPerSecond ?? 0) / 1_048_576.0, 1),
-            updateLabels: updateText
+            value: Formats.rate(netIn + netOut),
+            subtitle: "下行 \(Formats.rate(netIn)) · 上行 \(Formats.rate(netOut))",
+            ratio: min(max(netIn, netOut) / 1_048_576.0, 1)
         )
-        if let iokit {
-            // 无电池且电源来源/适配器都读不到时收缩网格（方案 §4.2）
-            smallCards[2].isHidden = !iokit.hasBattery && iokit.adapterWatts == nil && iokit.batteryPercent == nil
-        } else {
-            smallCards[2].isHidden = false
-        }
         smallCards[2].update(
-            value: iokit?.watts.map { String(format: "%.1f W", $0) } ?? "不可用",
-            subtitle: (iokit?.powerSource ?? "不可用") + (iokit?.batteryPercent.map { " · \($0)%" } ?? ""),
-            ratio: min((iokit?.watts ?? 0) / 100, 1),
-            updateLabels: updateText
-        )
-        smallCards[3].update(
             value: gpu.map { Formats.percent($0) } ?? "不可用",
             subtitle: IOKitSampler.gpuModel,
-            ratio: (gpu ?? 0) / 100,
-            updateLabels: updateText
+            ratio: (gpu ?? 0) / 100
         )
-        smallCards[4].update(
-            value: temperature.map { String(format: "%.1f °C", $0) } ?? "不可用",
-            subtitle: "内存压力 " + pressureText(system?.memoryPressure ?? -1),
-            ratio: (temperature ?? 0) / 110,
-            updateLabels: updateText
+        // 系统压力：热压力等级（对标 TMOG Thermals）+ 内存压力 + 温度
+        let thermalState = Foundation.ProcessInfo.processInfo.thermalState
+        smallCards[3].update(
+            value: temperature.map { String(format: "%.1f °C", $0) } ?? thermalText(thermalState),
+            subtitle: "内存压力 \(pressureText(system?.memoryPressure ?? -1)) · 热 \(thermalText(thermalState))",
+            ratio: temperature.map { min($0 / 110, 1) } ?? thermalRatio(thermalState)
         )
+    }
+
+    private func thermalText(_ state: Foundation.ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: return "正常"
+        case .fair: return "尚可"
+        case .serious: return "较高"
+        case .critical: return "严重"
+        @unknown default: return "未知"
+        }
+    }
+
+    private func thermalRatio(_ state: Foundation.ProcessInfo.ThermalState) -> Double {
+        switch state {
+        case .nominal: return 0
+        case .fair: return 0.34
+        case .serious: return 0.67
+        case .critical: return 1
+        @unknown default: return 0
+        }
     }
 
     private func pressureText(_ level: Int32) -> String {
@@ -631,7 +637,8 @@ final class SmallStatCardView: NSView, ThemeAware {
 
             bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            bar.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 5),
+            // 卡片随 5:3:2 拉高时，多余空间落在副标题与刻度条之间
+            bar.topAnchor.constraint(greaterThanOrEqualTo: subtitleLabel.bottomAnchor, constant: 5),
             bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
             bar.heightAnchor.constraint(equalToConstant: 12),
         ])
