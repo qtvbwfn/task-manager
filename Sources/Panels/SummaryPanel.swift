@@ -17,9 +17,8 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
 
     private let memoryCard = MemorySummaryCardView()
     private let smallCards: [SmallStatCardView] = [
-        SmallStatCardView(title: "磁盘", symbol: "internaldrive", kind: .disk),
         SmallStatCardView(title: "网络", symbol: "network", kind: .network),
-        SmallStatCardView(title: "GPU", symbol: "display", kind: .gpu),
+        SmallStatCardView(title: "磁盘", symbol: "internaldrive", kind: .disk),
         SmallStatCardView(title: "系统压力", symbol: "speedometer", kind: .thermal),
     ]
 
@@ -210,14 +209,11 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             rootStack.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
             rootStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
             rootStack.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
-            row3.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            row3.heightAnchor.constraint(equalToConstant: 88),
         ])
 
-        // 三段高度按 5:3:2 分配：上半部（仪表/概览/TOP N） : 内存 : 小卡片
-        let row1Ratio = row1.heightAnchor.constraint(equalTo: row3.heightAnchor, multiplier: 2.5)
-        row1Ratio.priority = NSLayoutConstraint.Priority(999)
-        row1Ratio.isActive = true
-        let memoryRatio = memoryCard.heightAnchor.constraint(equalTo: row3.heightAnchor, multiplier: 1.5)
+        // 底部卡片固定 88pt（TMOG 式紧凑，消除大片空白）；其余高度 上半部 : 内存 = 5 : 3
+        let memoryRatio = memoryCard.heightAnchor.constraint(equalTo: row1.heightAnchor, multiplier: 0.6)
         memoryRatio.priority = NSLayoutConstraint.Priority(999)
         memoryRatio.isActive = true
     }
@@ -286,31 +282,26 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             history: history.memoryUsed
         )
 
-        // 小面板：磁盘/网络主数值为读+写（下+上）合计，副标题分别标注两个方向（对标 TMOG）
-        let diskRead = iokit?.diskReadPerSecond ?? 0
-        let diskWrite = iokit?.diskWritePerSecond ?? 0
-        smallCards[0].update(
-            value: Formats.rate(diskRead + diskWrite),
-            subtitle: "读 \(Formats.rate(diskRead)) · 写 \(Formats.rate(diskWrite))",
-            ratio: min(max(diskRead, diskWrite) / (200 * 1_048_576.0), 1)
-        )
+        // 底部三卡（对标 TMOG）：网络/磁盘主数值为双向合计，副标题分标两方向
         let netIn = network?.bytesInPerSecond ?? 0
         let netOut = network?.bytesOutPerSecond ?? 0
-        smallCards[1].update(
+        smallCards[0].update(
             value: Formats.rate(netIn + netOut),
             subtitle: "下行 \(Formats.rate(netIn)) · 上行 \(Formats.rate(netOut))",
             ratio: min(max(netIn, netOut) / 1_048_576.0, 1)
         )
-        smallCards[2].update(
-            value: gpu.map { Formats.percent($0) } ?? "不可用",
-            subtitle: IOKitSampler.gpuModel,
-            ratio: (gpu ?? 0) / 100
+        let diskRead = iokit?.diskReadPerSecond ?? 0
+        let diskWrite = iokit?.diskWritePerSecond ?? 0
+        smallCards[1].update(
+            value: Formats.rate(diskRead + diskWrite),
+            subtitle: "读 \(Formats.rate(diskRead)) · 写 \(Formats.rate(diskWrite))",
+            ratio: min(max(diskRead, diskWrite) / (200 * 1_048_576.0), 1)
         )
         // 系统压力：热压力等级（对标 TMOG Thermals）+ 内存压力 + 温度
         let thermalState = Foundation.ProcessInfo.processInfo.thermalState
-        smallCards[3].update(
+        smallCards[2].update(
             value: temperature.map { String(format: "%.1f °C", $0) } ?? thermalText(thermalState),
-            subtitle: "内存压力 \(pressureText(system?.memoryPressure ?? -1)) · 热 \(thermalText(thermalState))",
+            subtitle: "内存压力 \(pressureText(system?.memoryPressure ?? -1)) · 温度 \(thermalText(thermalState))",
             ratio: temperature.map { min($0 / 110, 1) } ?? thermalRatio(thermalState)
         )
     }
@@ -320,7 +311,7 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
         case .nominal: return "正常"
         case .fair: return "尚可"
         case .serious: return "较高"
-        case .critical: return "严重"
+        case .critical: return "过高"
         @unknown default: return "未知"
         }
     }
@@ -637,7 +628,7 @@ final class SmallStatCardView: NSView, ThemeAware {
 
             bar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             bar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            // 卡片随 5:3:2 拉高时，多余空间落在副标题与刻度条之间
+            // 卡片固定高度下，多余空间落在副标题与刻度条之间（刻度条贴底）
             bar.topAnchor.constraint(greaterThanOrEqualTo: subtitleLabel.bottomAnchor, constant: 5),
             bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
             bar.heightAnchor.constraint(equalToConstant: 12),

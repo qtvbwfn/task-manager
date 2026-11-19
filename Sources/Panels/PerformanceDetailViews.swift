@@ -405,7 +405,7 @@ final class MemoryDetailView: NSView, ThemeAware {
     }
 }
 
-// MARK: - 通用图表详情（GPU/磁盘/网络/电源/热状态）
+// MARK: - 通用图表详情（GPU/磁盘/网络/电源/温度）
 
 final class GenericDetailView: NSView, ThemeAware {
     private let titleLabel = NSTextField(labelWithString: "")

@@ -12,7 +12,7 @@ final class PerformancePanelViewController: PanelBaseViewController {
             case .disk: return "磁盘"
             case .network: return "网络"
             case .power: return "电源"
-            case .thermal: return "热状态"
+            case .thermal: return "温度"
             }
         }
 
@@ -294,7 +294,7 @@ final class PerformancePanelViewController: PanelBaseViewController {
             )
         case .thermal:
             (detailViews[.thermal] as? GenericDetailView)?.update(
-                title: "热状态",
+                title: "温度",
                 value: iokit?.temperature.map { String(format: "%.1f °C", $0) } ?? "不可用",
                 subtitle: pressureName(system?.memoryPressure ?? -1),
                 chartValues: history.temperature,
