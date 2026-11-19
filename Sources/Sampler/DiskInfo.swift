@@ -6,7 +6,7 @@ import IOKit
 struct DiskIdentity {
     let model: String
     let bsdName: String
-    let medium: String        // IORegistry 原值："Solid State" / "Hard Disk Drive"
+    let medium: String        // 介质类型（中文）："固态硬盘" / "机械硬盘" / "光盘"
     let interconnect: String  // "NVMe" / "SATA"（PCI-Express + 固态硬盘映射为 NVMe，对标 TMOG）
     let size: UInt64
     let isSystemDisk: Bool
@@ -140,24 +140,46 @@ enum DiskInfo {
                 size = (property("Size", of: media) as? NSNumber)?.uint64Value ?? 0
             }
 
-            let medium = characteristics["Medium Type"] as? String ?? "不可用"
+            let rawMedium = characteristics["Medium Type"] as? String ?? "不可用"
             let protocolCharacteristics = property("Protocol Characteristics", of: entry) as? [String: Any]
             let rawInterconnect = protocolCharacteristics?["Physical Interconnect"] as? String ?? "不可用"
-            // 对标 TMOG：PCI-Express + 固态硬盘即 NVMe
-            let interconnect = rawInterconnect == "PCI-Express" && medium == "Solid State" ? "NVMe" : rawInterconnect
+            // 对标 TMOG：PCI-Express + 固态硬盘即 NVMe（用原值判断）
+            let interconnect = rawInterconnect == "PCI-Express" && rawMedium == "Solid State" ? "NVMe" : rawInterconnect
             let isSystem = !bsdName.isEmpty && bsdName == systemPhysicalBSD
 
             results.append(DiskIdentity(
                 model: model.isEmpty ? "不可用" : model,
                 bsdName: bsdName.isEmpty ? "不可用" : bsdName,
-                medium: medium,
+                medium: localizedMedium(rawMedium),
                 interconnect: interconnect,
                 size: size,
                 isSystemDisk: isSystem,
                 fileSystem: isSystem ? systemFS : ""
             ))
         }
+        // 调试：--fake-disk 注入一块虚拟盘，用于无多盘环境验证切换 UI
+        if CommandLine.arguments.contains("--fake-disk") {
+            results.append(DiskIdentity(
+                model: "测试盘 TEST1000",
+                bsdName: "disk99",
+                medium: "机械硬盘",
+                interconnect: "SATA",
+                size: 1_000_000_000_000,
+                isSystemDisk: false,
+                fileSystem: ""
+            ))
+        }
         // 系统盘排最前，保证 primary 退化路径也取到它
         return results.sorted { $0.isSystemDisk && !$1.isSystemDisk }
+    }
+
+    /// 介质类型原值 → 中文（与系统信息页一致）
+    private static func localizedMedium(_ raw: String) -> String {
+        switch raw {
+        case "Solid State": return "固态硬盘"
+        case "Hard Disk Drive", "Rotational": return "机械硬盘"
+        case "Optical": return "光盘"
+        default: return raw
+        }
     }
 }

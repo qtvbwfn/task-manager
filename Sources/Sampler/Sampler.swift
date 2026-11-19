@@ -11,12 +11,21 @@ struct HistorySnapshot {
     var memoryCompressed: [Double] = []
     var swapUsed: [Double] = []
     var temperature: [Double] = []
+    /// 各 SMC 温度传感器历史（key → 序列）
+    var temperatureSensors: [String: [Double]] = [:]
     var gpuUtilization: [Double] = []
     var diskRead: [Double] = []
     var diskWrite: [Double] = []
     var diskActive: [Double] = []
+    /// 每盘历史（按 bsdName）：多盘切换时各自成图
+    var diskReadByDisk: [String: [Double]] = [:]
+    var diskWriteByDisk: [String: [Double]] = [:]
+    var diskActiveByDisk: [String: [Double]] = [:]
     var networkIn: [Double] = []
     var networkOut: [Double] = []
+    /// 按接口的速率历史（网络详情页单接口视图用）
+    var networkInByInterface: [String: [Double]] = [:]
+    var networkOutByInterface: [String: [Double]] = [:]
     var watts: [Double] = []
 }
 
@@ -32,12 +41,18 @@ final class HistoryStore {
     var memoryCompressed = RingBuffer<Double>(capacity: capacity)
     var swapUsed = RingBuffer<Double>(capacity: capacity)
     var temperature = RingBuffer<Double>(capacity: capacity)
+    var temperatureSensors: [String: RingBuffer<Double>] = [:]
     var gpuUtilization = RingBuffer<Double>(capacity: capacity)
     var diskRead = RingBuffer<Double>(capacity: capacity)
     var diskWrite = RingBuffer<Double>(capacity: capacity)
     var diskActive = RingBuffer<Double>(capacity: capacity)
+    var diskReadByDisk: [String: RingBuffer<Double>] = [:]
+    var diskWriteByDisk: [String: RingBuffer<Double>] = [:]
+    var diskActiveByDisk: [String: RingBuffer<Double>] = [:]
     var networkIn = RingBuffer<Double>(capacity: capacity)
     var networkOut = RingBuffer<Double>(capacity: capacity)
+    var networkInByInterface: [String: RingBuffer<Double>] = [:]
+    var networkOutByInterface: [String: RingBuffer<Double>] = [:]
     var watts = RingBuffer<Double>(capacity: capacity)
 
     func append(system: SystemSnapshot) {
@@ -58,16 +73,36 @@ final class HistoryStore {
 
     func append(iokit: IOKitSample) {
         if let temperature = iokit.temperature { self.temperature.append(temperature) }
+        for (key, value) in iokit.sensorTemperatures {
+            temperatureSensors[key, default: RingBuffer<Double>(capacity: Self.capacity)].append(value)
+        }
         if let gpu = iokit.gpuUtilization { gpuUtilization.append(gpu) }
         diskRead.append(iokit.diskReadPerSecond)
         diskWrite.append(iokit.diskWritePerSecond)
         diskActive.append(iokit.diskActiveTimePercent)
+        for (name, disk) in iokit.perDisk {
+            diskReadByDisk[name, default: RingBuffer<Double>(capacity: Self.capacity)].append(disk.readPerSecond)
+            diskWriteByDisk[name, default: RingBuffer<Double>(capacity: Self.capacity)].append(disk.writePerSecond)
+            diskActiveByDisk[name, default: RingBuffer<Double>(capacity: Self.capacity)].append(disk.activeTimePercent)
+        }
         if let watts = iokit.watts { self.watts.append(watts) }
     }
 
     func append(network: NetworkSampler.Sample) {
         networkIn.append(network.bytesInPerSecond)
         networkOut.append(network.bytesOutPerSecond)
+        let names = Set(network.perInterface.map(\.name))
+        for interface in network.perInterface {
+            networkInByInterface[interface.name, default: RingBuffer<Double>(capacity: Self.capacity)].append(interface.inPerSecond)
+            networkOutByInterface[interface.name, default: RingBuffer<Double>(capacity: Self.capacity)].append(interface.outPerSecond)
+        }
+        // 清理已消失的接口
+        for name in networkInByInterface.keys where !names.contains(name) {
+            networkInByInterface.removeValue(forKey: name)
+        }
+        for name in networkOutByInterface.keys where !names.contains(name) {
+            networkOutByInterface.removeValue(forKey: name)
+        }
     }
 
     func snapshot() -> HistorySnapshot {
@@ -81,12 +116,18 @@ final class HistoryStore {
             memoryCompressed: memoryCompressed.values,
             swapUsed: swapUsed.values,
             temperature: temperature.values,
+            temperatureSensors: temperatureSensors.mapValues { $0.values },
             gpuUtilization: gpuUtilization.values,
             diskRead: diskRead.values,
             diskWrite: diskWrite.values,
             diskActive: diskActive.values,
+            diskReadByDisk: diskReadByDisk.mapValues { $0.values },
+            diskWriteByDisk: diskWriteByDisk.mapValues { $0.values },
+            diskActiveByDisk: diskActiveByDisk.mapValues { $0.values },
             networkIn: networkIn.values,
             networkOut: networkOut.values,
+            networkInByInterface: networkInByInterface.mapValues { $0.values },
+            networkOutByInterface: networkOutByInterface.mapValues { $0.values },
             watts: watts.values
         )
     }

@@ -96,7 +96,7 @@ final class Theme {
         case .gpu:      return isDark ? NSColor(hex: 0x4D9EF0) : NSColor(hex: 0x2673D9)
         case .disk:     return isDark ? NSColor(hex: 0x3FBF3F) : NSColor(hex: 0x2E9E2E)
         case .network:  return isDark ? NSColor(hex: 0x4D9EF0) : NSColor(hex: 0x2673D9)
-        case .power:    return isDark ? NSColor(hex: 0xE8C547) : NSColor(hex: 0xB8960F)
+        case .power:    return isDark ? NSColor(hex: 0xF25F3D) : NSColor(hex: 0xC2410C)
         case .thermal:  return isDark ? NSColor(hex: 0xF08C3A) : NSColor(hex: 0xC25E12)
         }
     }

@@ -5,6 +5,11 @@ import AppKit
     @objc func focusSearch(_ sender: Any?)
 }
 
+/// 遵循此协议的视图在主题切换时由各面板统一调用 applyTheme() 刷新配色。
+protocol ThemeAware: AnyObject {
+    func applyTheme()
+}
+
 /// 所有面板的基类：标题 + 内容容器，统一响应主题切换。
 class PanelBaseViewController: NSViewController {
     let panelTitle: String

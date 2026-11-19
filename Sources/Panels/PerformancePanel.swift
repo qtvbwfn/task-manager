@@ -11,7 +11,7 @@ final class PerformancePanelViewController: PanelBaseViewController {
             case .gpu: return "GPU"
             case .disk: return "磁盘"
             case .network: return "网络"
-            case .power: return "电源"
+            case .power: return "能耗"
             case .thermal: return "温度"
             }
         }
@@ -49,8 +49,12 @@ final class PerformancePanelViewController: PanelBaseViewController {
     private var detailViews: [Subsystem: NSView] = [:]
     private var cpuDetail: CPUDetailView?
     private var memoryDetail: MemoryDetailView?
+    private var powerDetail: PowerDetailView?
+    private var thermalDetail: TemperatureDetailView?
     private var diskDetail: DiskDetailView?
     private var isVisiblePanel = false
+    /// --disk 调试参数：磁盘详情预置选中的盘
+    private var preferredDisk: String?
 
     init() { super.init(title: "性能") }
 
@@ -63,6 +67,10 @@ final class PerformancePanelViewController: PanelBaseViewController {
         super.viewDidLoad()
         buildLayout()
         select(.cpu)
+        // 多盘验证用：--disk diskN 预置磁盘详情选中的盘（须在 select() 之前解析）
+        if let index = CommandLine.arguments.firstIndex(of: "--disk"), index + 1 < CommandLine.arguments.count {
+            preferredDisk = CommandLine.arguments[index + 1]
+        }
         // 截图验证用：--subsystem disk 直接选中性能页某子系统
         if let index = CommandLine.arguments.firstIndex(of: "--subsystem"),
            index + 1 < CommandLine.arguments.count {
@@ -152,6 +160,23 @@ final class PerformancePanelViewController: PanelBaseViewController {
             case .disk:
                 let view = DiskDetailView()
                 diskDetail = view
+                preferredDisk.map { view.select(bsdName: $0) }
+                detail = view
+            case .power:
+                let view = PowerDetailView(color: Theme.shared.color(.power))
+                powerDetail = view
+                detail = view
+            case .thermal:
+                let view = TemperatureDetailView(color: Theme.shared.color(.thermal))
+                thermalDetail = view
+                detail = view
+            case .network:
+                let view = NetworkDetailView()
+                // 截图验证用：--netif en0 直接选中某接口
+                if let index = CommandLine.arguments.firstIndex(of: "--netif"),
+                   index + 1 < CommandLine.arguments.count {
+                    view.select(interfaceName: CommandLine.arguments[index + 1])
+                }
                 detail = view
             default:
                 detail = GenericDetailView()
@@ -213,11 +238,14 @@ final class PerformancePanelViewController: PanelBaseViewController {
                     color: Theme.shared.color(color)
                 )
             case .disk:
-                let subtitle = DiskInfo.primary.map { "\($0.medium) · \($0.bsdName)" } ?? "磁盘"
+                let primary = DiskInfo.primary
+                let subtitle = primary.map { "\($0.medium) · \($0.bsdName)" } ?? "磁盘"
+                // 磁盘卡跟随主盘（每盘数据，非全局合计）
+                let active = primary.flatMap { iokit?.perDisk[$0.bsdName]?.activeTimePercent } ?? 0
                 card.update(
                     line1: subtitle,
-                    line2: Formats.percent(iokit?.diskActiveTimePercent ?? 0),
-                    values: history.diskActive,
+                    line2: Formats.percent(active),
+                    values: primary.map { history.diskActiveByDisk[$0.bsdName] ?? [] } ?? [],
                     color: Theme.shared.color(color)
                 )
             case .network:
@@ -237,7 +265,7 @@ final class PerformancePanelViewController: PanelBaseViewController {
             case .thermal:
                 card.update(
                     line1: iokit?.temperature.map { String(format: "%.1f °C", $0) } ?? "不可用",
-                    line2: pressureName(system?.memoryPressure ?? -1),
+                    line2: "热压力 " + thermalText(Foundation.ProcessInfo.processInfo.thermalState),
                     values: history.temperature,
                     color: Theme.shared.color(color)
                 )
@@ -263,56 +291,13 @@ final class PerformancePanelViewController: PanelBaseViewController {
                 ]
             )
         case .disk:
-            diskDetail?.update(identity: DiskInfo.primary, iokit: iokit, history: history)
+            diskDetail?.update(identities: DiskInfo.identities, iokit: iokit, history: history)
         case .network:
-            (detailViews[.network] as? GenericDetailView)?.update(
-                title: "网络",
-                value: Formats.rate(network?.bytesInPerSecond ?? 0),
-                subtitle: "下行 " + Formats.rate(network?.bytesInPerSecond ?? 0) + " · 上行 " + Formats.rate(network?.bytesOutPerSecond ?? 0),
-                chartValues: history.networkIn,
-                chartTitle: "接收（蓝）· 发送（绿）",
-                color: Theme.shared.color(.network),
-                metrics: [
-                    ("下行", Formats.rate(network?.bytesInPerSecond ?? 0)),
-                    ("上行", Formats.rate(network?.bytesOutPerSecond ?? 0)),
-                    ("累计接收", Formats.memory(network?.totalBytesIn ?? 0)),
-                    ("累计发送", Formats.memory(network?.totalBytesOut ?? 0)),
-                    ("接口数", "\(network?.interfaces ?? 0)"),
-                ],
-                secondSeries: history.networkOut,
-                secondColor: Theme.shared.color(.cpu)
-            )
+            (detailViews[.network] as? NetworkDetailView)?.update(sample: network, history: history)
         case .power:
-            (detailViews[.power] as? GenericDetailView)?.update(
-                title: "电源",
-                value: iokit?.watts.map { String(format: "%.1f W", $0) } ?? "不可用",
-                subtitle: powerSubtitle(iokit: iokit),
-                chartValues: history.watts,
-                chartTitle: "实时功耗",
-                color: Theme.shared.color(.power),
-                metrics: [
-                    ("实时功耗", iokit?.watts.map { String(format: "%.1f W", $0) } ?? "不可用"),
-                    ("电源状态", iokit?.powerSource ?? "不可用"),
-                    ("电池电量", iokit?.batteryPercent.map { "\($0)%" } ?? "不可用"),
-                    ("充电状态", iokit?.isCharging == true ? "充电中" : (iokit?.hasBattery == true ? "未充电" : "不可用")),
-                    ("适配器", iokit?.adapterWatts.map { "\($0) W" } ?? "不可用"),
-                    ("电池健康", iokit?.batteryHealthPercent.map { String(format: "%.0f%%", $0) } ?? "不可用"),
-                    ("循环次数", iokit?.cycleCount.map { "\($0)" } ?? "不可用"),
-                ]
-            )
+            powerDetail?.update(history: history, iokit: iokit)
         case .thermal:
-            (detailViews[.thermal] as? GenericDetailView)?.update(
-                title: "温度",
-                value: iokit?.temperature.map { String(format: "%.1f °C", $0) } ?? "不可用",
-                subtitle: pressureName(system?.memoryPressure ?? -1),
-                chartValues: history.temperature,
-                chartTitle: "CPU 温度（SMC TC0P）",
-                color: Theme.shared.color(.thermal),
-                metrics: [
-                    ("温度", iokit?.temperature.map { String(format: "%.1f °C", $0) } ?? "不可用"),
-                    ("内存压力", pressureName(system?.memoryPressure ?? -1)),
-                ]
-            )
+            thermalDetail?.update(history: history, iokit: iokit)
         }
     }
 
@@ -324,143 +309,22 @@ final class PerformancePanelViewController: PanelBaseViewController {
         return parts.joined(separator: " · ")
     }
 
+    private func thermalText(_ state: Foundation.ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: return "正常"
+        case .fair: return "温度偏高"
+        case .serious: return "温度较高"
+        case .critical: return "温度过高"
+        @unknown default: return "未知"
+        }
+    }
+
     private func pressureName(_ level: Int32) -> String {
         switch level {
         case 1: return "内存压力 正常"
         case 2: return "内存压力 警告"
         case 4: return "内存压力 严重"
         default: return "内存压力 不可用"
-        }
-    }
-}
-
-// MARK: - 子系统卡片
-
-protocol ThemeAware: AnyObject {
-    func applyTheme()
-}
-
-final class SubsystemCardView: NSView {
-    let subsystem: PerformancePanelViewController.Subsystem
-    var onClick: (() -> Void)?
-
-    private let iconView = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let line1Label = NSTextField(labelWithString: "")
-    private let line2Label = NSTextField(labelWithString: "")
-    private let sparkline = SparklineView()
-    private var selected = false
-    private var hovered = false
-    private var tracking: NSTrackingArea?
-
-    init(subsystem: PerformancePanelViewController.Subsystem) {
-        self.subsystem = subsystem
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.cornerRadius = 10
-        layer?.borderWidth = 1
-        translatesAutoresizingMaskIntoConstraints = false
-        heightAnchor.constraint(equalToConstant: 58).isActive = true
-
-        titleLabel.stringValue = subsystem.title
-        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(titleLabel)
-
-        line1Label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        line1Label.lineBreakMode = .byTruncatingTail
-        line1Label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(line1Label)
-
-        line2Label.font = .systemFont(ofSize: 11)
-        line2Label.lineBreakMode = .byTruncatingTail
-        line2Label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(line2Label)
-
-        iconView.image = NSImage(systemSymbolName: subsystem.symbol, accessibilityDescription: subsystem.title)
-        iconView.imageScaling = .scaleProportionallyDown
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(iconView)
-
-        sparkline.translatesAutoresizingMaskIntoConstraints = false
-        sparkline.sampleCapacity = 0
-        addSubview(sparkline)
-
-        NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 16),
-            iconView.heightAnchor.constraint(equalToConstant: 16),
-
-            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 7),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-
-            line1Label.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            line1Label.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
-            line1Label.trailingAnchor.constraint(lessThanOrEqualTo: sparkline.leadingAnchor, constant: -5),
-
-            line2Label.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            line2Label.topAnchor.constraint(equalTo: line1Label.bottomAnchor, constant: 1),
-            line2Label.trailingAnchor.constraint(lessThanOrEqualTo: sparkline.leadingAnchor, constant: -5),
-
-            sparkline.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            sparkline.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            sparkline.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-            sparkline.widthAnchor.constraint(equalToConstant: 60),
-        ])
-        applyTheme()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) { hovered = true; refreshBackground() }
-    override func mouseExited(with event: NSEvent) { hovered = false; refreshBackground() }
-    override func mouseDown(with event: NSEvent) { onClick?() }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
-
-    func setSelected(_ selected: Bool) {
-        self.selected = selected
-        refreshBackground()
-    }
-
-    func setTitle(_ title: String) {
-        titleLabel.stringValue = title
-    }
-
-    func update(line1: String, line2: String, values: [Double], color: NSColor) {
-        line1Label.stringValue = line1
-        line2Label.stringValue = line2
-        sparkline.values = values
-        sparkline.color = color
-        iconView.contentTintColor = color
-    }
-
-    func applyTheme() {
-        let theme = Theme.shared
-        titleLabel.textColor = theme.textPrimary
-        line1Label.textColor = theme.textPrimary
-        line2Label.textColor = theme.textSecondary
-        iconView.contentTintColor = theme.color(subsystem.kind)
-        refreshBackground()
-    }
-
-    private func refreshBackground() {
-        let theme = Theme.shared
-        let color = theme.color(subsystem.kind)
-        if selected || hovered {
-            layer?.backgroundColor = theme.cardBackground.cgColor
-            layer?.borderColor = color.withAlphaComponent(selected ? 0.9 : 0.4).cgColor
-        } else {
-            layer?.backgroundColor = theme.cardBackground.withAlphaComponent(0.55).cgColor
-            layer?.borderColor = theme.separator.withAlphaComponent(0.6).cgColor
         }
     }
 }

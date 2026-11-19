@@ -90,6 +90,15 @@ enum Formats {
         return String(format: "%.2f MB/s", kb / 1024.0)
     }
 
+    /// 网口连接速率：bits/s → Gb/s / Mb/s
+    static func baudrate(_ bps: UInt64) -> String {
+        let gbps = Double(bps) / 1_000_000_000.0
+        if gbps >= 1 {
+            return String(format: "%.2f Gb/s", gbps)
+        }
+        return String(format: "%.0f Mb/s", Double(bps) / 1_000_000.0)
+    }
+
     static func percent(_ value: Double) -> String {
         String(format: "%.1f%%", value)
     }

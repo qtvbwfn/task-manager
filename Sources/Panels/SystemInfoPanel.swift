@@ -552,9 +552,9 @@ final class SystemInfoPanelViewController: PanelBaseViewController {
                 rows.append(.field("已使用", "不可用"))
             }
             rows.append(.field("可用", disk.available > 0 ? Formats.memory(disk.available) : "不可用"))
-            if let iokit, let rate = iokit.perDiskRates[disk.bsdName] {
-                rows.append(.field("读取速率", Formats.rate(rate.read)))
-                rows.append(.field("写入速率", Formats.rate(rate.write)))
+            if let iokit, let rate = iokit.perDisk[disk.bsdName] {
+                rows.append(.field("读取速率", Formats.rate(rate.readPerSecond)))
+                rows.append(.field("写入速率", Formats.rate(rate.writePerSecond)))
             }
         }
         return rows

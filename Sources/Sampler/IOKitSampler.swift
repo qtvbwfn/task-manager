@@ -3,17 +3,23 @@ import Foundation
 import IOKit
 import IOKit.ps
 
-struct DiskRate {
-    let read: Double
-    let write: Double
+/// 单盘指标（按 bsdName）：速率 / 累计 / 活跃时间 / 平均响应
+struct DiskMetrics {
+    let readPerSecond: Double
+    let writePerSecond: Double
+    let totalReadBytes: UInt64
+    let totalWriteBytes: UInt64
+    let activeTimePercent: Double
+    let avgResponseMs: Double?
 }
 
 struct IOKitSample {
-    let temperature: Double?        // °C（SMC TC0P）
+    let temperature: Double?        // °C（CPU/SoC 热点，各 CPU 传感器最大值）
+    let sensorTemperatures: [String: Double]  // SMC 传感器 key → °C
     let gpuUtilization: Double?     // %
     let diskReadPerSecond: Double
     let diskWritePerSecond: Double
-    let perDiskRates: [String: DiskRate]
+    let perDisk: [String: DiskMetrics]   // 按 bsdName 的每盘指标（性能页多盘切换 / 系统信息页）
     let diskTotalReadBytes: UInt64      // 开机以来累计
     let diskTotalWriteBytes: UInt64
     let diskActiveTimePercent: Double   // Busy Time 差分 / 经过时间
@@ -33,7 +39,7 @@ struct IOKitSample {
 final class IOKitSampler {
     private let smc = SMCConnection()
     private var previousDisk: (stats: DiskStats, time: UInt64)?
-    private var previousDiskByBSD: [String: (read: UInt64, write: UInt64)] = [:]
+    private var previousDiskByBSD: [String: DiskStats] = [:]
 
     private static let batteryInfo: (hasBattery: Bool, design: Int, rawMax: Int, cycles: Int) = {
         var iterator: io_iterator_t = 0
@@ -75,13 +81,22 @@ final class IOKitSampler {
     static var gpuModel: String { gpuName }
 
     func sample() -> IOKitSample {
-        let temperature = smc.temperature()
+        // 温度传感器：TMOG 温度页展示的 CPU core/PECI/proximity + 电池
+        let sensorKeys = ["TC0E", "TC0F", "TCXC", "TC0P", "TB0T"]
+        let sensorTemperatures = smc.temperatures(for: sensorKeys)
+        let hotspot = ["TC0E", "TC0F", "TCXC", "TC0P"]
+            .compactMap { sensorTemperatures[$0] }
+            .max()
+        let temperature = hotspot ?? smc.temperature()
         let gpu = gpuUtilization()
         let disk = diskRates()
         let power = powerState()
 
+        // 实时功耗优先取 SMC 系统总功耗（PSTR）；失败时退回电池瞬时电流×电压
         let watts: Double?
-        if let battery = smartBattery() {
+        if let systemWatts = smc.powerWatts() {
+            watts = systemWatts
+        } else if let battery = smartBattery() {
             watts = abs(Double(battery.voltage) * Double(battery.amperage)) / 1_000_000.0
         } else {
             watts = nil
@@ -96,10 +111,11 @@ final class IOKitSampler {
 
         return IOKitSample(
             temperature: temperature,
+            sensorTemperatures: sensorTemperatures,
             gpuUtilization: gpu,
             diskReadPerSecond: disk.read,
             diskWritePerSecond: disk.write,
-            perDiskRates: disk.perDisk,
+            perDisk: disk.perDisk,
             diskTotalReadBytes: disk.totals.readBytes,
             diskTotalWriteBytes: disk.totals.writeBytes,
             diskActiveTimePercent: disk.activePercent,
@@ -152,7 +168,7 @@ final class IOKitSampler {
         var busyMs: UInt64 = 0
     }
 
-    private func diskRates() -> (read: Double, write: Double, perDisk: [String: DiskRate], totals: DiskStats, activePercent: Double, avgResponseMs: Double?) {
+    private func diskRates() -> (read: Double, write: Double, perDisk: [String: DiskMetrics], totals: DiskStats, activePercent: Double, avgResponseMs: Double?) {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOBlockStorageDriver"), &iterator) == KERN_SUCCESS else {
             return (0, 0, [:], DiskStats(), 0, nil)
@@ -160,7 +176,7 @@ final class IOKitSampler {
         defer { IOObjectRelease(iterator) }
 
         var totals = DiskStats()
-        var current: [String: (read: UInt64, write: UInt64)] = [:]
+        var current: [String: DiskStats] = [:]
         var entry = IOIteratorNext(iterator)
         while entry != 0 {
             let bsdName = Self.bsdName(ofStorageDriver: entry) ?? "unknown"
@@ -169,14 +185,18 @@ final class IOKitSampler {
                 func counter(_ key: String) -> UInt64 {
                     (dict[key] as? NSNumber)?.uint64Value ?? 0
                 }
-                let read = counter("Bytes (Read)")
-                let write = counter("Bytes (Write)")
-                totals.readBytes += read
-                totals.writeBytes += write
-                totals.ops += counter("Operations (Read)") + counter("Operations (Write)")
-                totals.timeMs += counter("Read Time (ms)") + counter("Write Time (ms)")
-                totals.busyMs += counter("Busy Time (ms)")
-                current[bsdName] = (read, write)
+                var disk = DiskStats()
+                disk.readBytes = counter("Bytes (Read)")
+                disk.writeBytes = counter("Bytes (Write)")
+                disk.ops = counter("Operations (Read)") + counter("Operations (Write)")
+                disk.timeMs = counter("Read Time (ms)") + counter("Write Time (ms)")
+                disk.busyMs = counter("Busy Time (ms)")
+                current[bsdName] = disk
+                totals.readBytes += disk.readBytes
+                totals.writeBytes += disk.writeBytes
+                totals.ops += disk.ops
+                totals.timeMs += disk.timeMs
+                totals.busyMs += disk.busyMs
             }
             IOObjectRelease(entry)
             entry = IOIteratorNext(iterator)
@@ -203,15 +223,32 @@ final class IOKitSampler {
             }
         }
 
-        var perDisk: [String: DiskRate] = [:]
-        for (name, counters) in current {
-            guard let old = previousDiskByBSD[name], elapsed > 0 else {
-                perDisk[name] = DiskRate(read: 0, write: 0)
-                continue
+        // 每盘独立差分：首帧或该盘刚出现时无历史 → 零值占位
+        var perDisk: [String: DiskMetrics] = [:]
+        for (name, disk) in current {
+            var diskRead = 0.0
+            var diskWrite = 0.0
+            var active = 0.0
+            var response: Double?
+            if let old = previousDiskByBSD[name], elapsed > 0 {
+                diskRead = disk.readBytes >= old.readBytes ? Double(disk.readBytes - old.readBytes) / elapsed : 0
+                diskWrite = disk.writeBytes >= old.writeBytes ? Double(disk.writeBytes - old.writeBytes) / elapsed : 0
+                let deltaBusyMs = disk.busyMs >= old.busyMs ? disk.busyMs - old.busyMs : 0
+                active = min(100, Double(deltaBusyMs) / (elapsed * 1000) * 100)
+                let deltaOps = disk.ops >= old.ops ? disk.ops - old.ops : 0
+                let deltaTimeMs = disk.timeMs >= old.timeMs ? disk.timeMs - old.timeMs : 0
+                if deltaOps > 0 {
+                    response = Double(deltaTimeMs) / Double(deltaOps)
+                }
             }
-            let read = counters.read >= old.read ? Double(counters.read - old.read) / elapsed : 0
-            let write = counters.write >= old.write ? Double(counters.write - old.write) / elapsed : 0
-            perDisk[name] = DiskRate(read: read, write: write)
+            perDisk[name] = DiskMetrics(
+                readPerSecond: diskRead,
+                writePerSecond: diskWrite,
+                totalReadBytes: disk.readBytes,
+                totalWriteBytes: disk.writeBytes,
+                activeTimePercent: active,
+                avgResponseMs: response
+            )
         }
         previousDiskByBSD = current
         return (readRate, writeRate, perDisk, totals, activePercent, avgResponseMs)
@@ -320,16 +357,46 @@ final class SMCConnection {
     }
 
     func temperature() -> Double? {
-        guard !failed else { return nil }
+        guard ensureOpen(),
+              let key = readKey("TC0P"), key.type == "sp78", key.size >= 2 else { return nil }
+        return SMCCodec.decodeSP78(Array(key.bytes.prefix(2)))
+    }
+
+    /// 批量读取 SMC 温度传感器（sp78，°C）
+    func temperatures(for keys: [String]) -> [String: Double] {
+        guard ensureOpen() else { return [:] }
+        var result: [String: Double] = [:]
+        for key in keys {
+            guard let value = readKey(key), value.type == "sp78", value.size >= 2 else { continue }
+            let temperature = SMCCodec.decodeSP78(Array(value.bytes.prefix(2)))
+            if temperature.isFinite, temperature > -20, temperature < 150 {
+                result[key] = temperature
+            }
+        }
+        return result
+    }
+
+    /// 系统总功耗（SMC PSTR，flt 小端 Float，单位 W）
+    func powerWatts() -> Double? {
+        guard ensureOpen(),
+              let key = readKey("PSTR"), key.type == "flt ", key.size >= 4 else { return nil }
+        let bytes = key.bytes
+        let bits = UInt32(bytes[3]) << 24 | UInt32(bytes[2]) << 16 | UInt32(bytes[1]) << 8 | UInt32(bytes[0])
+        let watts = Double(Float(bitPattern: bits))
+        guard watts.isFinite, watts >= 0, watts < 1_000 else { return nil }
+        return watts
+    }
+
+    private func ensureOpen() -> Bool {
+        guard !failed else { return false }
         if !opened {
             opened = open()
             if !opened {
                 failed = true
-                return nil
+                return false
             }
         }
-        guard let key = readKey("TC0P"), key.type == "sp78", key.size >= 2 else { return nil }
-        return SMCCodec.decodeSP78(Array(key.bytes.prefix(2)))
+        return true
     }
 
     private func open() -> Bool {

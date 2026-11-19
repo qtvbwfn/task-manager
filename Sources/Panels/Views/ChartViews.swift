@@ -28,6 +28,8 @@ final class ChartView: NSView {
     /// 双轴刻度：fraction 为自底部起在 0...1 区间的相对位置
     var leftAxisLabels: [(fraction: Double, text: String)] = [] { didSet { needsDisplay = true } }
     var rightAxisLabels: [(fraction: Double, text: String)] = [] { didSet { needsDisplay = true } }
+    /// 轴刻度字号（温度页等需要比默认 9pt 更大的标注）
+    var axisLabelFontSize: CGFloat = 9
 
     /// 刻度贴边叠绘在绘图区内（TMOG 式），不再预留边距挤占曲线宽度
     private var leftInset: CGFloat { 0 }
@@ -159,7 +161,7 @@ final class ChartView: NSView {
     private func drawAxisLabels(in plot: NSRect) {
         guard !leftAxisLabels.isEmpty || !rightAxisLabels.isEmpty else { return }
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: axisLabelFontSize, weight: .regular),
             .foregroundColor: Theme.shared.textSecondary,
         ]
 
