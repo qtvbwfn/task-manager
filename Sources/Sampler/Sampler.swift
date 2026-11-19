@@ -14,6 +14,7 @@ struct HistorySnapshot {
     var gpuUtilization: [Double] = []
     var diskRead: [Double] = []
     var diskWrite: [Double] = []
+    var diskActive: [Double] = []
     var networkIn: [Double] = []
     var networkOut: [Double] = []
     var watts: [Double] = []
@@ -34,6 +35,7 @@ final class HistoryStore {
     var gpuUtilization = RingBuffer<Double>(capacity: capacity)
     var diskRead = RingBuffer<Double>(capacity: capacity)
     var diskWrite = RingBuffer<Double>(capacity: capacity)
+    var diskActive = RingBuffer<Double>(capacity: capacity)
     var networkIn = RingBuffer<Double>(capacity: capacity)
     var networkOut = RingBuffer<Double>(capacity: capacity)
     var watts = RingBuffer<Double>(capacity: capacity)
@@ -59,6 +61,7 @@ final class HistoryStore {
         if let gpu = iokit.gpuUtilization { gpuUtilization.append(gpu) }
         diskRead.append(iokit.diskReadPerSecond)
         diskWrite.append(iokit.diskWritePerSecond)
+        diskActive.append(iokit.diskActiveTimePercent)
         if let watts = iokit.watts { self.watts.append(watts) }
     }
 
@@ -81,6 +84,7 @@ final class HistoryStore {
             gpuUtilization: gpuUtilization.values,
             diskRead: diskRead.values,
             diskWrite: diskWrite.values,
+            diskActive: diskActive.values,
             networkIn: networkIn.values,
             networkOut: networkOut.values,
             watts: watts.values

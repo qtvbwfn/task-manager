@@ -8,8 +8,14 @@ enum StaticInfo {
     static let machine: String = sysctlString("hw.machine")
     static let physicalCores: Int = sysctlInt("hw.physicalcpu")
     static let logicalCores: Int = sysctlInt("hw.logicalcpu")
+    static let packages: Int = sysctlInt("hw.packages")
+    static let l1InstructionCache: Int = sysctlInt("hw.l1icachesize")
+    static let l1DataCache: Int = sysctlInt("hw.l1dcachesize")
+    static var l1Cache: Int { l1InstructionCache + l1DataCache }
     static let l2Cache: Int = sysctlInt("hw.l2cachesize")
     static let l3Cache: Int = sysctlInt("hw.l3cachesize")
+    static let hypervisorSupported: Bool = sysctlInt("kern.hv_support") == 1
+    static let runningInVM: Bool = sysctlInt("kern.hv_vmm_present") == 1
     static let baseFrequency: Int = sysctlInt("hw.cpufrequency")
     static let memorySize: UInt64 = UInt64(max(0, sysctlInt64("hw.memsize")))
     static let osVersion: String = {

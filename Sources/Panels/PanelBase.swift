@@ -12,6 +12,9 @@ class PanelBaseViewController: NSViewController {
     private let titleLabel = NSTextField(labelWithString: "")
     let contentContainer = NSView()
 
+    /// 性能页对齐 TMOG：大标题由右侧详情区提供，页面不再重复一行"性能"
+    var showsPanelTitle: Bool { true }
+
     init(title: String) {
         self.panelTitle = title
         super.init(nibName: nil, bundle: nil)
@@ -31,15 +34,25 @@ class PanelBaseViewController: NSViewController {
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(contentContainer)
 
-        NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
-            titleLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+        if showsPanelTitle {
+            NSLayoutConstraint.activate([
+                titleLabel.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
+                titleLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
 
-            contentContainer.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
-            contentContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            contentContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-            contentContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
-        ])
+                contentContainer.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+                contentContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+                contentContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
+                contentContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            ])
+        } else {
+            titleLabel.isHidden = true
+            NSLayoutConstraint.activate([
+                contentContainer.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+                contentContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+                contentContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
+                contentContainer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            ])
+        }
     }
 
     override func viewDidLoad() {

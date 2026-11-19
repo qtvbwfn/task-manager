@@ -14,6 +14,10 @@ struct IOKitSample {
     let diskReadPerSecond: Double
     let diskWritePerSecond: Double
     let perDiskRates: [String: DiskRate]
+    let diskTotalReadBytes: UInt64      // 开机以来累计
+    let diskTotalWriteBytes: UInt64
+    let diskActiveTimePercent: Double   // Busy Time 差分 / 经过时间
+    let diskAvgResponseMs: Double?      // (读耗时 + 写耗时) / 操作数
     let watts: Double?              // 实时功耗
     let batteryPercent: Int?        // 0–100
     let isCharging: Bool
@@ -28,7 +32,7 @@ struct IOKitSample {
 /// 任一接口失败只影响对应字段（nil），不影响其他采样。
 final class IOKitSampler {
     private let smc = SMCConnection()
-    private var previousDisk: (read: UInt64, write: UInt64, time: UInt64)?
+    private var previousDisk: (stats: DiskStats, time: UInt64)?
     private var previousDiskByBSD: [String: (read: UInt64, write: UInt64)] = [:]
 
     private static let batteryInfo: (hasBattery: Bool, design: Int, rawMax: Int, cycles: Int) = {
@@ -96,6 +100,10 @@ final class IOKitSampler {
             diskReadPerSecond: disk.read,
             diskWritePerSecond: disk.write,
             perDiskRates: disk.perDisk,
+            diskTotalReadBytes: disk.totals.readBytes,
+            diskTotalWriteBytes: disk.totals.writeBytes,
+            diskActiveTimePercent: disk.activePercent,
+            diskAvgResponseMs: disk.avgResponseMs,
             watts: watts,
             batteryPercent: power.percent,
             isCharging: power.charging,
@@ -136,25 +144,38 @@ final class IOKitSampler {
 
     // MARK: - 磁盘 IO
 
-    private func diskRates() -> (read: Double, write: Double, perDisk: [String: DiskRate]) {
+    private struct DiskStats {
+        var readBytes: UInt64 = 0
+        var writeBytes: UInt64 = 0
+        var ops: UInt64 = 0
+        var timeMs: UInt64 = 0
+        var busyMs: UInt64 = 0
+    }
+
+    private func diskRates() -> (read: Double, write: Double, perDisk: [String: DiskRate], totals: DiskStats, activePercent: Double, avgResponseMs: Double?) {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOBlockStorageDriver"), &iterator) == KERN_SUCCESS else {
-            return (0, 0, [:])
+            return (0, 0, [:], DiskStats(), 0, nil)
         }
         defer { IOObjectRelease(iterator) }
 
-        var totalRead: UInt64 = 0
-        var totalWrite: UInt64 = 0
+        var totals = DiskStats()
         var current: [String: (read: UInt64, write: UInt64)] = [:]
         var entry = IOIteratorNext(iterator)
         while entry != 0 {
             let bsdName = Self.bsdName(ofStorageDriver: entry) ?? "unknown"
             if let unmanaged = IORegistryEntryCreateCFProperty(entry, "Statistics" as CFString, kCFAllocatorDefault, 0),
                let dict = unmanaged.takeRetainedValue() as? [String: Any] {
-                let read = (dict["Bytes (Read)"] as? NSNumber)?.uint64Value ?? 0
-                let write = (dict["Bytes (Write)"] as? NSNumber)?.uint64Value ?? 0
-                totalRead += read
-                totalWrite += write
+                func counter(_ key: String) -> UInt64 {
+                    (dict[key] as? NSNumber)?.uint64Value ?? 0
+                }
+                let read = counter("Bytes (Read)")
+                let write = counter("Bytes (Write)")
+                totals.readBytes += read
+                totals.writeBytes += write
+                totals.ops += counter("Operations (Read)") + counter("Operations (Write)")
+                totals.timeMs += counter("Read Time (ms)") + counter("Write Time (ms)")
+                totals.busyMs += counter("Busy Time (ms)")
                 current[bsdName] = (read, write)
             }
             IOObjectRelease(entry)
@@ -164,13 +185,22 @@ final class IOKitSampler {
         let now = DispatchTime.now().uptimeNanoseconds
         let previous = previousDisk
         let elapsed = previous.map { Double(now &- $0.time) / 1_000_000_000.0 } ?? 0
-        previousDisk = (totalRead, totalWrite, now)
+        previousDisk = (totals, now)
 
         var readRate: Double = 0
         var writeRate: Double = 0
+        var activePercent: Double = 0
+        var avgResponseMs: Double?
         if let previous, elapsed > 0 {
-            readRate = totalRead >= previous.read ? Double(totalRead - previous.read) / elapsed : 0
-            writeRate = totalWrite >= previous.write ? Double(totalWrite - previous.write) / elapsed : 0
+            readRate = totals.readBytes >= previous.stats.readBytes ? Double(totals.readBytes - previous.stats.readBytes) / elapsed : 0
+            writeRate = totals.writeBytes >= previous.stats.writeBytes ? Double(totals.writeBytes - previous.stats.writeBytes) / elapsed : 0
+            let deltaBusyMs = totals.busyMs >= previous.stats.busyMs ? totals.busyMs - previous.stats.busyMs : 0
+            activePercent = min(100, Double(deltaBusyMs) / (elapsed * 1000) * 100)
+            let deltaOps = totals.ops >= previous.stats.ops ? totals.ops - previous.stats.ops : 0
+            let deltaTimeMs = totals.timeMs >= previous.stats.timeMs ? totals.timeMs - previous.stats.timeMs : 0
+            if deltaOps > 0 {
+                avgResponseMs = Double(deltaTimeMs) / Double(deltaOps)
+            }
         }
 
         var perDisk: [String: DiskRate] = [:]
@@ -184,7 +214,7 @@ final class IOKitSampler {
             perDisk[name] = DiskRate(read: read, write: write)
         }
         previousDiskByBSD = current
-        return (readRate, writeRate, perDisk)
+        return (readRate, writeRate, perDisk, totals, activePercent, avgResponseMs)
     }
 
     /// IOBlockStorageDriver 的 BSD 名在子节点 IOMedia 上（方案 §0：盘名经 IOMedia 子对象）

@@ -56,6 +56,9 @@ final class PerformancePanelViewController: PanelBaseViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// TMOG 式布局：左侧资源卡列表，右侧详情自带大标题，顶部不再重复"性能"
+    override var showsPanelTitle: Bool { false }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         buildLayout()
@@ -380,6 +383,7 @@ final class SubsystemCardView: NSView {
         addSubview(iconView)
 
         sparkline.translatesAutoresizingMaskIntoConstraints = false
+        sparkline.sampleCapacity = 0
         addSubview(sparkline)
 
         NSLayoutConstraint.activate([

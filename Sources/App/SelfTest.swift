@@ -50,6 +50,14 @@ enum SelfTest {
             "self cpu=\(selfUsage.map { String(format: "%.2f%%", $0.cpuPercent) } ?? "nil")"
         )
 
+        // 6. 磁盘标识（IOBlockStorageDevice→Driver→IOMedia + statfs 系统盘映射）
+        let disk = DiskInfo.primary
+        check(
+            "磁盘标识",
+            disk != nil && disk!.size > 0 && disk!.bsdName.hasPrefix("disk") && disk!.isSystemDisk,
+            "model=\(disk?.model ?? "nil") bsd=\(disk?.bsdName ?? "nil") medium=\(disk?.medium ?? "nil") interconnect=\(disk?.interconnect ?? "nil") size=\(disk?.size ?? 0) system=\(disk.map { $0.isSystemDisk ? "yes" : "no" } ?? "nil") fs=\(disk?.fileSystem ?? "nil")"
+        )
+
         print(failures == 0 ? "SELFTEST OK" : "SELFTEST FAILED (\(failures) 项)")
         return failures == 0 ? 0 : 1
     }
