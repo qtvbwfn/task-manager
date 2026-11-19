@@ -49,6 +49,7 @@ final class PerformancePanelViewController: PanelBaseViewController {
     private var detailViews: [Subsystem: NSView] = [:]
     private var cpuDetail: CPUDetailView?
     private var memoryDetail: MemoryDetailView?
+    private var diskDetail: DiskDetailView?
     private var isVisiblePanel = false
 
     init() { super.init(title: "性能") }
@@ -59,6 +60,14 @@ final class PerformancePanelViewController: PanelBaseViewController {
         super.viewDidLoad()
         buildLayout()
         select(.cpu)
+        // 截图验证用：--subsystem disk 直接选中性能页某子系统
+        if let index = CommandLine.arguments.firstIndex(of: "--subsystem"),
+           index + 1 < CommandLine.arguments.count {
+            let names = ["cpu", "memory", "gpu", "disk", "network", "power", "thermal"]
+            if let i = names.firstIndex(of: CommandLine.arguments[index + 1]), let sub = Subsystem(rawValue: i) {
+                select(sub)
+            }
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(samplerUpdated), name: .samplerDidUpdate, object: nil)
     }
 
@@ -96,6 +105,10 @@ final class PerformancePanelViewController: PanelBaseViewController {
         for subsystem in Subsystem.allCases {
             let card = SubsystemCardView(subsystem: subsystem)
             card.onClick = { [weak self] in self?.select(subsystem) }
+            // 磁盘卡对标 TMOG：大标题直接显示盘型号
+            if subsystem == .disk, let identity = DiskInfo.primary {
+                card.setTitle(identity.model)
+            }
             cards.append(card)
             cardColumn.addArrangedSubview(card)
         }
@@ -132,6 +145,10 @@ final class PerformancePanelViewController: PanelBaseViewController {
             case .memory:
                 let view = MemoryDetailView(color: Theme.shared.color(.memory))
                 memoryDetail = view
+                detail = view
+            case .disk:
+                let view = DiskDetailView()
+                diskDetail = view
                 detail = view
             default:
                 detail = GenericDetailView()
@@ -193,10 +210,11 @@ final class PerformancePanelViewController: PanelBaseViewController {
                     color: Theme.shared.color(color)
                 )
             case .disk:
+                let subtitle = DiskInfo.primary.map { "\($0.medium) · \($0.bsdName)" } ?? "磁盘"
                 card.update(
-                    line1: "读 " + Formats.rate(iokit?.diskReadPerSecond ?? 0),
-                    line2: "写 " + Formats.rate(iokit?.diskWritePerSecond ?? 0),
-                    values: history.diskRead,
+                    line1: subtitle,
+                    line2: Formats.percent(iokit?.diskActiveTimePercent ?? 0),
+                    values: history.diskActive,
                     color: Theme.shared.color(color)
                 )
             case .network:
@@ -242,20 +260,7 @@ final class PerformancePanelViewController: PanelBaseViewController {
                 ]
             )
         case .disk:
-            (detailViews[.disk] as? GenericDetailView)?.update(
-                title: "磁盘",
-                value: Formats.rate(iokit?.diskReadPerSecond ?? 0),
-                subtitle: "读 " + Formats.rate(iokit?.diskReadPerSecond ?? 0) + " · 写 " + Formats.rate(iokit?.diskWritePerSecond ?? 0),
-                chartValues: history.diskRead,
-                chartTitle: "读取速率（蓝）· 写入速率（橙）",
-                color: Theme.shared.color(.disk),
-                metrics: [
-                    ("读取", Formats.rate(iokit?.diskReadPerSecond ?? 0)),
-                    ("写入", Formats.rate(iokit?.diskWritePerSecond ?? 0)),
-                ],
-                secondSeries: history.diskWrite,
-                secondColor: Theme.shared.color(.thermal)
-            )
+            diskDetail?.update(identity: DiskInfo.primary, iokit: iokit, history: history)
         case .network:
             (detailViews[.network] as? GenericDetailView)?.update(
                 title: "网络",
@@ -420,6 +425,10 @@ final class SubsystemCardView: NSView {
     func setSelected(_ selected: Bool) {
         self.selected = selected
         refreshBackground()
+    }
+
+    func setTitle(_ title: String) {
+        titleLabel.stringValue = title
     }
 
     func update(line1: String, line2: String, values: [Double], color: NSColor) {

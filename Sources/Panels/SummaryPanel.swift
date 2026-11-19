@@ -17,8 +17,9 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
 
     private let memoryCard = MemorySummaryCardView()
     private let smallCards: [SmallStatCardView] = [
-        SmallStatCardView(title: "网络", symbol: "network", kind: .network),
         SmallStatCardView(title: "磁盘", symbol: "internaldrive", kind: .disk),
+        SmallStatCardView(title: "网络", symbol: "network", kind: .network),
+        SmallStatCardView(title: "GPU", symbol: "display", kind: .gpu),
         SmallStatCardView(title: "系统压力", symbol: "speedometer", kind: .thermal),
     ]
 
@@ -26,6 +27,8 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
     private var sampleCounter = 0
     /// Top 表可视行数（随窗口高度变化）：TOP N 排满即止、不滚动
     private var visibleRowCount = 0
+    /// 图例圆点（主题切换时在 applyTheme 里同步颜色）
+    private var legendDots: [NSView] = []
 
     /// NSTableView 不会自动缩到 clip：名称列吃掉剩余宽度、表框贴齐 clip，
     /// 否则最后一列（内存）被裁掉、名称列右侧留一大块空白；行数按可视高度取 TOP N
@@ -69,6 +72,15 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
 
     override func applyTheme() {
         super.applyTheme()
+        // 图例圆点随主题同步（内核曲线为固定红色，与图表 series 一致）
+        let legendColors = [
+            Theme.shared.color(.cpu),
+            Theme.shared.color(.thermal),
+            NSColor(srgbRed: 0.95, green: 0.35, blue: 0.35, alpha: 1),
+        ]
+        for (index, dot) in legendDots.enumerated() where index < legendColors.count {
+            dot.layer?.backgroundColor = legendColors[index].cgColor
+        }
         cpuGauge.applyTheme()
         tempGauge.applyTheme()
         gpuGauge.applyTheme()
@@ -98,14 +110,45 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
         overviewTitle.translatesAutoresizingMaskIntoConstraints = false
         overviewValue.font = .monospacedDigitSystemFont(ofSize: 22, weight: .bold)
         overviewValue.translatesAutoresizingMaskIntoConstraints = false
-        overviewFooter.font = .systemFont(ofSize: 11)
+        overviewFooter.font = .systemFont(ofSize: 12)
         overviewFooter.translatesAutoresizingMaskIntoConstraints = false
         overviewChart.translatesAutoresizingMaskIntoConstraints = false
         // 双轴：左轴利用率 %，右轴温度 °C（温度按 110°C 满量程映射到同一绘图区）
         overviewChart.leftAxisLabels = [(1, "100%"), (0.5, "50%"), (0, "0%")]
         overviewChart.rightAxisLabels = [(90.0 / 110.0, "90°C"), (60.0 / 110.0, "60°C"), (30.0 / 110.0, "30°C")]
+        // 图例：三条曲线的含义（对标 TMOG：利用率/温度/内核）
+        let legendItems: [(NSColor, String)] = [
+            (Theme.shared.color(.cpu), "利用率"),
+            (Theme.shared.color(.thermal), "温度"),
+            (NSColor(srgbRed: 0.95, green: 0.35, blue: 0.35, alpha: 1), "内核"),
+        ]
+        var legendViews: [NSView] = []
+        legendDots = []
+        for (color, text) in legendItems {
+            let dot = NSView()
+            dot.wantsLayer = true
+            dot.layer?.backgroundColor = color.cgColor
+            dot.layer?.cornerRadius = 3
+            dot.translatesAutoresizingMaskIntoConstraints = false
+            dot.widthAnchor.constraint(equalToConstant: 6).isActive = true
+            dot.heightAnchor.constraint(equalToConstant: 6).isActive = true
+            legendDots.append(dot)
+            let label = NSTextField(labelWithString: text)
+            label.font = .systemFont(ofSize: 10)
+            label.textColor = .secondaryLabelColor
+            let stack = NSStackView(views: [dot, label])
+            stack.orientation = .horizontal
+            stack.spacing = 4
+            legendViews.append(stack)
+        }
+        let legendStack = NSStackView(views: legendViews)
+        legendStack.orientation = .horizontal
+        legendStack.spacing = 12
+        legendStack.translatesAutoresizingMaskIntoConstraints = false
+
         overviewPanel.addSubview(overviewTitle)
         overviewPanel.addSubview(overviewValue)
+        overviewPanel.addSubview(legendStack)
         overviewPanel.addSubview(overviewChart)
         overviewPanel.addSubview(overviewFooter)
         overviewPanel.translatesAutoresizingMaskIntoConstraints = false
@@ -115,7 +158,9 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             overviewTitle.leadingAnchor.constraint(equalTo: overviewPanel.leadingAnchor, constant: 10),
             overviewValue.centerYAnchor.constraint(equalTo: overviewTitle.centerYAnchor),
             overviewValue.trailingAnchor.constraint(equalTo: overviewPanel.trailingAnchor, constant: -10),
-            overviewChart.topAnchor.constraint(equalTo: overviewTitle.bottomAnchor, constant: 4),
+            legendStack.topAnchor.constraint(equalTo: overviewTitle.bottomAnchor, constant: 3),
+            legendStack.leadingAnchor.constraint(equalTo: overviewPanel.leadingAnchor, constant: 10),
+            overviewChart.topAnchor.constraint(equalTo: legendStack.bottomAnchor, constant: 3),
             overviewChart.leadingAnchor.constraint(equalTo: overviewPanel.leadingAnchor, constant: 10),
             overviewChart.trailingAnchor.constraint(equalTo: overviewPanel.trailingAnchor, constant: -10),
             overviewChart.bottomAnchor.constraint(equalTo: overviewFooter.topAnchor, constant: -4),
@@ -210,12 +255,14 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             rootStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
             rootStack.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
             row3.heightAnchor.constraint(equalToConstant: 88),
+            // 内存固定 145pt（较 5:3 再缩 1/3）：窗口高度变化全部由上半部 CPU 区吸收
+            memoryCard.heightAnchor.constraint(equalToConstant: 145),
         ])
 
-        // 底部卡片固定 88pt（TMOG 式紧凑，消除大片空白）；其余高度 上半部 : 内存 = 5 : 3
-        let memoryRatio = memoryCard.heightAnchor.constraint(equalTo: row1.heightAnchor, multiplier: 0.6)
-        memoryRatio.priority = NSLayoutConstraint.Priority(999)
-        memoryRatio.isActive = true
+        // 上半部保底 = 初始窗口下的高度（~440pt）：拉高只长 CPU 区，拉低也只缩 CPU 区
+        let row1Minimum = row1.heightAnchor.constraint(greaterThanOrEqualToConstant: 440)
+        row1Minimum.priority = NSLayoutConstraint.Priority(999)
+        row1Minimum.isActive = true
     }
 
     // MARK: - 数据刷新
@@ -267,7 +314,7 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             .filter { $0.pid != getpid() }
             .sorted { $0.cpuPercent > $1.cpuPercent }
         topProcesses = visibleRowCount > 0 ? Array(top.prefix(visibleRowCount)) : top
-        tableCountLabel.stringValue = "共 \(processes.count) 个"
+        tableTitle.stringValue = "Top CPU \(visibleRowCount) 进程"
         topTable.reloadData()
 
         // 内存
@@ -282,24 +329,29 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             history: history.memoryUsed
         )
 
-        // 底部三卡（对标 TMOG）：网络/磁盘主数值为双向合计，副标题分标两方向
-        let netIn = network?.bytesInPerSecond ?? 0
-        let netOut = network?.bytesOutPerSecond ?? 0
-        smallCards[0].update(
-            value: Formats.rate(netIn + netOut),
-            subtitle: "下行 \(Formats.rate(netIn)) · 上行 \(Formats.rate(netOut))",
-            ratio: min(max(netIn, netOut) / 1_048_576.0, 1)
-        )
+        // 底部四卡（对标 TMOG：磁盘/网络/GPU/系统压力）：主数值为双向合计，副标题分标两方向
         let diskRead = iokit?.diskReadPerSecond ?? 0
         let diskWrite = iokit?.diskWritePerSecond ?? 0
-        smallCards[1].update(
+        smallCards[0].update(
             value: Formats.rate(diskRead + diskWrite),
             subtitle: "读 \(Formats.rate(diskRead)) · 写 \(Formats.rate(diskWrite))",
             ratio: min(max(diskRead, diskWrite) / (200 * 1_048_576.0), 1)
         )
+        let netIn = network?.bytesInPerSecond ?? 0
+        let netOut = network?.bytesOutPerSecond ?? 0
+        smallCards[1].update(
+            value: Formats.rate(netIn + netOut),
+            subtitle: "下行 \(Formats.rate(netIn)) · 上行 \(Formats.rate(netOut))",
+            ratio: min(max(netIn, netOut) / 1_048_576.0, 1)
+        )
+        smallCards[2].update(
+            value: gpu.map { Formats.percent($0) } ?? "不可用",
+            subtitle: IOKitSampler.gpuModel,
+            ratio: (gpu ?? 0) / 100
+        )
         // 系统压力：热压力等级（对标 TMOG Thermals）+ 内存压力 + 温度
         let thermalState = Foundation.ProcessInfo.processInfo.thermalState
-        smallCards[2].update(
+        smallCards[3].update(
             value: temperature.map { String(format: "%.1f °C", $0) } ?? thermalText(thermalState),
             subtitle: "内存压力 \(pressureText(system?.memoryPressure ?? -1)) · 温度 \(thermalText(thermalState))",
             ratio: temperature.map { min($0 / 110, 1) } ?? thermalRatio(thermalState)
@@ -590,18 +642,18 @@ final class SmallStatCardView: NSView, ThemeAware {
         addSubview(iconView)
 
         titleLabel.stringValue = title
-        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 16, weight: .bold)
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 17, weight: .bold)
         valueLabel.alignment = .right
         valueLabel.lineBreakMode = .byTruncatingTail
         valueLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(valueLabel)
 
-        subtitleLabel.font = .systemFont(ofSize: 10)
+        subtitleLabel.font = .systemFont(ofSize: 11)
         subtitleLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(subtitleLabel)

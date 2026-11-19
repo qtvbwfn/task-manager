@@ -22,14 +22,16 @@ final class ChartView: NSView {
     var showsCursor = true
     var gridDivisions = 4
     var glow = true
-    /// 历史缓冲容量：x 轴按固定容量取步长，数据不足时从左向右逐点追加（避免刚启动就被拉伸到全宽）
+    /// 历史缓冲容量：x 轴按固定容量取步长，数据不足时从左向右逐点追加（避免刚启动就被拉伸到全宽）。
+    /// 设为 0 表示不预留空位，按当前点数铺满宽度（逐核迷你图用）
     var sampleCapacity = HistoryStore.capacity
     /// 双轴刻度：fraction 为自底部起在 0...1 区间的相对位置
     var leftAxisLabels: [(fraction: Double, text: String)] = [] { didSet { needsDisplay = true } }
     var rightAxisLabels: [(fraction: Double, text: String)] = [] { didSet { needsDisplay = true } }
 
-    private var leftInset: CGFloat { leftAxisLabels.isEmpty ? 0 : 30 }
-    private var rightInset: CGFloat { rightAxisLabels.isEmpty ? 0 : 34 }
+    /// 刻度贴边叠绘在绘图区内（TMOG 式），不再预留边距挤占曲线宽度
+    private var leftInset: CGFloat { 0 }
+    private var rightInset: CGFloat { 0 }
     private var plotRect: NSRect {
         NSRect(x: leftInset, y: 0, width: max(bounds.width - leftInset - rightInset, 2), height: bounds.height)
     }
@@ -48,26 +50,20 @@ final class ChartView: NSView {
 
         let range = max(yMax - yMin, 0.0001)
         for item in series where item.values.count > 1 {
-            let path = CGMutablePath()
             let count = item.values.count
             let capacity = max(sampleCapacity, count, 2)
             let step = plot.width / CGFloat(capacity - 1)
             // 按像素宽度抽稀：517px 宽的图无需真画 240 个点
             let maxPoints = max(2, Int(plot.width / 2))
             let stride = max(1, Int(ceil(Double(count) / Double(maxPoints))))
-            var lastIndexDrawn = 0
+            var points: [CGPoint] = []
 
             func appendPoint(_ index: Int) {
                 let value = item.values[index]
                 let x = plot.minX + CGFloat(index) * step
                 let clamped = min(max(value, yMin), yMax)
                 let y = plot.maxY - CGFloat((clamped - yMin) / range) * plot.height
-                if index == 0 {
-                    path.move(to: CGPoint(x: x, y: y))
-                } else {
-                    path.addLine(to: CGPoint(x: x, y: y))
-                }
-                lastIndexDrawn = index
+                points.append(CGPoint(x: x, y: y))
             }
 
             var index = 0
@@ -75,9 +71,12 @@ final class ChartView: NSView {
                 appendPoint(index)
                 index += stride
             }
-            if lastIndexDrawn != count - 1 {
+            if (count - 1) % stride != 0 {
                 appendPoint(count - 1)
             }
+
+            // Catmull-Rom 平滑为三次贝塞尔（TMOG 式平缓），尖刺变圆滑
+            let path = Self.smoothedPath(points)
 
             if item.fill, let first = item.values.first {
                 let fillPath = path.mutableCopy()!
@@ -114,23 +113,47 @@ final class ChartView: NSView {
             context.restoreGState()
         }
 
-        if showsCursor, let lastSeries = series.first(where: { !$0.values.isEmpty }), let lastValue = lastSeries.values.last {
-            let clamped = min(max(lastValue, yMin), yMax)
-            let y = plot.maxY - CGFloat((clamped - yMin) / range) * plot.height
-            let capacity = max(sampleCapacity, lastSeries.values.count, 2)
-            let step = plot.width / CGFloat(capacity - 1)
-            let x = min(plot.maxX - 5, plot.minX + CGFloat(lastSeries.values.count - 1) * step)
-            let triangle = CGMutablePath()
-            triangle.move(to: CGPoint(x: x - 3, y: y - 3))
-            triangle.addLine(to: CGPoint(x: x + 3, y: y))
-            triangle.addLine(to: CGPoint(x: x - 3, y: y + 3))
-            triangle.closeSubpath()
-            context.setFillColor(Theme.shared.textPrimary.cgColor)
-            context.addPath(triangle)
-            context.fillPath()
+        // 每条曲线末端各一个箭头游标，颜色随线（TMOG 式）
+        if showsCursor {
+            for item in series where item.values.count > 1 {
+                let capacity = max(sampleCapacity, item.values.count, 2)
+                let clamped = min(max(item.values.last!, yMin), yMax)
+                let y = plot.maxY - CGFloat((clamped - yMin) / range) * plot.height
+                let step = plot.width / CGFloat(capacity - 1)
+                let x = min(plot.maxX - 5, plot.minX + CGFloat(item.values.count - 1) * step)
+                let triangle = CGMutablePath()
+                triangle.move(to: CGPoint(x: x - 3, y: y - 3))
+                triangle.addLine(to: CGPoint(x: x + 3, y: y))
+                triangle.addLine(to: CGPoint(x: x - 3, y: y + 3))
+                triangle.closeSubpath()
+                context.setFillColor(item.color.cgColor)
+                context.addPath(triangle)
+                context.fillPath()
+            }
         }
 
         drawAxisLabels(in: plot)
+    }
+
+    /// Catmull-Rom → 三次贝塞尔：相邻点作切线控制点，尖刺变平缓（TMOG 式）
+    private static func smoothedPath(_ points: [CGPoint]) -> CGPath {
+        let path = CGMutablePath()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        guard points.count > 2 else {
+            for point in points.dropFirst() { path.addLine(to: point) }
+            return path
+        }
+        for index in 0..<(points.count - 1) {
+            let previous = points[max(index - 1, 0)]
+            let current = points[index]
+            let next = points[index + 1]
+            let after = points[min(index + 2, points.count - 1)]
+            let control1 = CGPoint(x: current.x + (next.x - previous.x) / 6, y: current.y + (next.y - previous.y) / 6)
+            let control2 = CGPoint(x: next.x - (after.x - current.x) / 6, y: next.y - (after.y - current.y) / 6)
+            path.addCurve(to: next, control1: control1, control2: control2)
+        }
+        return path
     }
 
     private func drawAxisLabels(in plot: NSRect) {
@@ -145,12 +168,8 @@ final class ChartView: NSView {
                 let text = label.text as NSString
                 let size = text.size(withAttributes: attributes)
                 let y = min(max(plot.minY + plot.maxY - CGFloat(label.fraction) * plot.height - size.height / 2, 0), bounds.height - size.height)
-                let x: CGFloat
-                if rightAligned {
-                    x = plot.maxX + max((rightInset - size.width) / 2, 2)
-                } else {
-                    x = max((leftInset - size.width) / 2, 1)
-                }
+                // 叠绘在绘图区边缘：左贴左、右贴右，不占曲线空间
+                let x = rightAligned ? plot.maxX - size.width - 3 : plot.minX + 3
                 text.draw(at: NSPoint(x: x, y: y), withAttributes: attributes)
             }
         }
