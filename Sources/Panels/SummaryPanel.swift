@@ -181,9 +181,9 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
         tablePanel.addSubview(tableCountLabel)
 
         let columns: [(String, String, CGFloat, NSTextAlignment)] = [
-            // 列宽按最宽内容实测（monospacedDigit 13pt）：PID 7 位 57pt、CPU "100.0%" 49pt、
-            // 内存 "999.9 MB"/"999.99 GB" ≤67pt；名称列吃掉剩余宽度
-            ("pid", "PID", 67, .right),
+            // 列宽按最宽内容实测（monospacedDigit 13pt）：PID 6 位 49pt（macOS pid 上限 99998，7 位极端值截断可忽略）、
+            // CPU "100.0%" 49pt、内存 "999.9 MB"/"999.99 GB" ≤67pt；名称列吃掉剩余宽度
+            ("pid", "PID", 54, .right),
             ("name", "名称", 140, .left),
             ("cpu", "CPU", 59, .right),
             ("memory", "内存", 77, .right),
@@ -229,7 +229,8 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
         row1.translatesAutoresizingMaskIntoConstraints = false
         row1.setContentHuggingPriority(.defaultLow, for: .vertical)
         gaugeStack.widthAnchor.constraint(equalToConstant: 168).isActive = true
-        tablePanel.widthAnchor.constraint(equalToConstant: 416).isActive = true
+        // 表格面板 403pt（PID 列缩窄省出 13pt 让给 CPU 概览图表），概览面板吃剩余宽度
+        tablePanel.widthAnchor.constraint(equalToConstant: 403).isActive = true
 
         // 行 2：内存
         memoryCard.translatesAutoresizingMaskIntoConstraints = false
@@ -349,7 +350,7 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
             subtitle: IOKitSampler.gpuModel,
             ratio: (gpu ?? 0) / 100
         )
-        // 系统压力：热压力等级（对标 TMOG Thermals）+ 内存压力 + 温度
+        // 系统压力：散热状态（对标 TMOG Thermals）+ 内存压力 + 温度
         let thermalState = Foundation.ProcessInfo.processInfo.thermalState
         smallCards[3].update(
             value: temperature.map { String(format: "%.1f °C", $0) } ?? thermalText(thermalState),
@@ -361,7 +362,7 @@ final class SummaryPanelViewController: PanelBaseViewController, NSTableViewData
     private func thermalText(_ state: Foundation.ProcessInfo.ThermalState) -> String {
         switch state {
         case .nominal: return "正常"
-        case .fair: return "尚可"
+        case .fair: return "偏高"
         case .serious: return "较高"
         case .critical: return "过高"
         @unknown default: return "未知"
